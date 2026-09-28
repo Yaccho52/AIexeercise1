@@ -148,7 +148,7 @@ def _chart(fig):
 # --------------------------------------------------------------------------
 
 st.title("时间序列预测对比工具")
-st.caption("移动平均 / 一次指数平滑 / Naive 朴素法　—　"
+st.caption("线性趋势 / 移动平均 / 一次指数平滑 / Naive 朴素法　—　"
            "留出法评估：前段建模、后段检验，指标含 SSE、标准误 SE 与 Theil U")
 
 raw = st.text_area(
@@ -190,8 +190,9 @@ with st.sidebar:
     ses_alpha = st.slider(
         "SES 平滑系数 α", min_value=0.01, max_value=0.99, value=0.30,
         step=0.01, disabled="SES" not in chosen,
-        help="越大越重视最新数据；SES 用它配合起始平滑值逐期递推")
+        help="越大越重视最新数据；SES 用它从初始值 S0 起逐期递推")
 
+    st.divider()
 
     min_start, max_start = 3, n - 1
     default_start = max(min_start, min(max_start, n - 5 + 1))
@@ -200,21 +201,29 @@ with st.sidebar:
         max_value=max_start, value=default_start, step=1,
         help="例如设为 6，表示用前 5 期建模，预测第 6 期及其后的所有观测值")
 
-    train_mean = sum(y[:forecast_start - 1]) / (forecast_start - 1)
-    ses_level = st.text_input(
-        "SES 初始值 S(T−1)", value="",
-        placeholder=f"留空 → 自动取 {train_mean:.4f}",
-        help="即第 T−1 期（训练段最后一期）的预测值。SES 用它和第 T−1 期的实际值"
-             "加权算出第 T 期的预测值，之后逐期递推。没有就留空，程序自动取"
-             "训练段实际值的平均值。")
-    st.caption(f"留空时的取值：训练段前 {forecast_start - 1} 期实际值的平均 "
-               f"= {train_mean:.4f}")
+    _tn = forecast_start - 1
+    ses_mode = st.radio(
+        "SES 初始值 S0 的来源",
+        ["自动：取前几期的平均", "手动输入一个数"], index=0,
+        help="S0 是第 1 期之前的初始平滑值，SES 从它出发逐期递推求出 S1、S2……"
+             "第 t 期的预测值取上一期的平滑值 S_(t−1)。")
+    if ses_mode.startswith("自动"):
+        ses_avg_n = st.number_input(
+            "取前几期的平均", min_value=1, max_value=_tn, value=_tn, step=1)
+        ses_s0 = None
+        _m = sum(y[:int(ses_avg_n)]) / int(ses_avg_n)
+        st.caption(f"S0 = 前 {int(ses_avg_n)} 期实际值的平均 = {_m:.4f}")
+    else:
+        ses_s0 = st.text_input("S0 的数值", value="", placeholder="例如 13.5768")
+        ses_avg_n = None
+        st.caption("S0 = 上面填写的数值" if str(ses_s0).strip()
+                   else "还没填，S0 会被当成 0，请填一个数")
     confidence = st.select_slider(
         "预测区间置信水平", options=[0.80, 0.90, 0.95, 0.99], value=0.95)
 
     st.divider()
     st.caption("计算口径：模型只用训练段估计；移动平均一次性外推留出段各期，"
-               "SES 从初始值 S(T−1) 起按 S_(t+1) = α·Y_t + (1−α)·S_t 逐期递推，"
+               "SES 从初始值 S0 起按 S_t = α·Y_t + (1−α)·S_(t−1) 逐期递推，"
                "Naive 取上一期实际值滚动预测（其 Theil U2 恒为 1）。"
                "SSE / SE / Theil U 全部按留出段的「实际值 vs 预测值」计算，"
                "残差标准误 SE = √(SSE/(H−k))。")
@@ -245,7 +254,8 @@ if not chosen:
 try:
     results, info = core.run_holdout(
         y, forecast_start, models=tuple(chosen), ma_order=ma_order,
-        ses_level=ses_level, alpha=ses_alpha, confidence=confidence)
+        ses_s0=ses_s0, ses_avg_n=ses_avg_n, alpha=ses_alpha,
+        confidence=confidence)
 except ValueError as exc:
     st.error(str(exc))
     st.stop()
@@ -268,9 +278,9 @@ st.caption("统一记号：t 为期数（1, 2, 3…），y_t 为第 t 期的实�
 _FORMULA_LATEX = {
     "MA": (r"\hat{y}_t = \frac{1}{k}\sum_{i=1}^{k} y_{t-i}",
            "k 期移动平均：把最近 k 期的平均值作为预测值。"),
-    "SES": (r"S_{t+1} = \alpha\,Y_t + (1-\alpha)\,S_t",
-            "一次指数平滑：S_t 表示第 t 期的预测值，下一期预测值由本期实际值 Y_t "
-            "和本期预测值 S_t 加权得到；α 越大越重视最新实际值。"),
+    "SES": (r"S_t = \alpha\,Y_t + (1-\alpha)\,S_{t-1},\qquad \hat{y}_t = S_{t-1}",
+            "一次指数平滑：S0 由你指定或取前几期实际值的平均，之后逐期递推；"
+            "第 t 期的预测值取上一期的平滑值 S_(t−1)。"),
     "Naive": (r"\hat{y}_t = y_{t-1}",
               "朴素法：第 t 期的预测值直接取第 t−1 期的实际值（滚动一步向前）。"),
     "Linear": (r"\hat{y}_t = a + b\,t,\qquad "
@@ -299,12 +309,10 @@ for r in results:
         st.caption("把上面这个方程里的 t 依次取训练段之后的各期期数，就得到下面这些预测值。")
     if r.id == "SES":
         fi = r.fit_info
-        src = "手动指定的数值" if fi["given"] else "训练段实际值的平均值"
-        st.latex(rf"S_{{T-1}} = {fi['level']:.4f},\qquad \alpha = {fi['alpha']:g}")
-        st.caption(f"当前 S(T−1) 的来源：{src}；训练段 {fi['n']} 期实际值的平均 "
-                   f"= {fi['mean']:.4f}。递推从 S(T−1) 开始：第 T 期的预测值 = "
-                   f"α×(第 T−1 期实际值) + (1−α)×S(T−1)，"
-                   f"之后每期用当期实际值和当期预测值算出下一期的预测值。")
+        src = "手动输入" if fi["given"] else f"前 {fi['avg_n']} 期实际值的平均"
+        st.latex(rf"S_0 = {fi['s0']:.4f},\qquad \alpha = {fi['alpha']:g}")
+        st.caption(f"当前 S0 的来源：{src}。递推从 S0 开始："
+                   f"S_t = α·Y_t + (1−α)·S_(t−1)，第 t 期的预测值取 S_(t−1)。")
     st.markdown("预测标准误：")
     st.latex(_SE_LATEX[r.id])
     if r.id == "Linear":
@@ -355,6 +363,22 @@ for i, t in enumerate(info["t_index"]):
         row[f"{r.key} 误差"] = round(r.errors[i], 4)
     prows.append(row)
 st.dataframe(pd.DataFrame(prows), hide_index=True)
+
+_ses_res = [r for r in results if r.id == "SES"]
+if _ses_res:
+    with st.expander(f"查看 SES 递推全过程：S0 ~ S{n}"):
+        _S = _ses_res[0].fit_info["s_series"]
+        st.caption("S_t = α·Y_t + (1−α)·S_(t−1)；第 t 期的预测值取 S_(t−1)。")
+        _srows = []
+        for _t in range(len(_S)):
+            _srows.append({
+                "平滑值": f"S{_t}",
+                "计算依据": "初始值" if _t == 0 else f"α·Y{_t} + (1−α)·S{_t - 1}",
+                "该期实际值": None if _t == 0 else y[_t - 1],
+                "数值": round(_S[_t], 4),
+                "用作预测": f"第 {_t + 1} 期" if _t < n else "—",
+            })
+        st.dataframe(pd.DataFrame(_srows), hide_index=True)
 
 # --------------------------------------------------------------------------
 # ④ 预测标准误与预测区间

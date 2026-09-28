@@ -9,7 +9,7 @@
     留出段（后若干期）—— 只用来检验模型，不参与建模
 
 模型在训练段上估计，然后预测留出段各期：移动平均一次性向后外推，
-SES 从起始平滑值 S(T−1) 起逐期递推，Naive 取上一期实际值滚动预测（其 U2 恒为 1）。
+SES 从初始值 S0 起逐期递推（第 t 期预测值取 S_(t−1)），Naive 取上一期实际值滚动预测（其 U2 恒为 1）。
 报告中所有评价指标（SSE / MSE / RMSE / 标准误 SE / Theil U1、U2）都用
 留出段的「实际值 vs 预测值」计算，衡量的是真正的样本外预测能力。
 
@@ -17,7 +17,7 @@ SES 从起始平滑值 S(T−1) 起逐期递推，Naive 取上一期实际值滚
 ------------------------------
     Linear: 线性趋势模型，最小二乘拟合 y_t = a + b·t 后沿趋势外推
     MA    : k 期移动平均，外推值 = 训练段最后 k 期的平均值
-    SES   : 一次指数平滑，从初始值 S(T−1) 起按 S_(t+1) = α·Y_t + (1−α)·S_t 递推
+    SES   : 一次指数平滑，从初始值 S0 起按 S_t = α·Y_t + (1−α)·S_(t−1) 递推
     Naive : 朴素法，第 T 期预测值 = 第 T-1 期实际值（滚动一步向前）
 
 计算全部由 ts_core.py 完成（与网页版 app.py 共用同一套口径），
@@ -79,12 +79,13 @@ MA_ORDER = 3
 # SES 的平滑系数 α，取值范围 0 < α < 1（越大越重视最新数据）
 SES_ALPHA = 0.3
 
-# SES 的初始值 S(T−1)（即第 T−1 期、训练段最后一期的预测值）：
+# SES 的初始值 S0（第 1 期之前的水准）：
 #   填一个数值 → 直接采用；
-#   填 None    → 自动取训练段实际值的算术平均（例如前 5 期的平均）
-# 递推式 S_(t+1) = α·Y_t + (1−α)·S_t：第 T 期预测值 =
-# α×(第 T−1 期实际值) + (1−α)×S(T−1)，之后每期用当期实际值和当期预测值算下期。
-SES_LEVEL = None
+#   填 None    → 自动取前 SES_AVG_N 期实际值的算术平均
+# 递推式 S_t = α·Y_t + (1−α)·S_(t−1)：从 S0 出发依次用 Y1, Y2, ... 求出
+# S1, S2, ...；第 t 期的预测值取 S_(t−1)。
+SES_S0 = None
+SES_AVG_N = None      # None 表示取整个训练段；也可填 3、5 这样的期数
 
 # 预测区间的置信水平
 CONFIDENCE = 0.95
@@ -95,14 +96,14 @@ OUTPUT_FILE = None
 # 各模型的公式（写入 Excel 的「模型公式」工作表）
 FORMULA_TEXT = {
     "MA": f"y_hat_t = (1/k)·Σ(i=1..k) y_(t-i)    其中 k = {MA_ORDER}",
-    "SES": "S_(t+1) = α·Y_t + (1−α)·S_t    （S_t 为第 t 期预测值）",
+    "SES": "S_t = α·Y_t + (1−α)·S_(t−1)；  第 t 期预测值 = S_(t−1)",
     "Naive": "y_hat_t = y_(t−1)",
     "Linear": "y_hat_t = a + b·t；"
               "  b = Σ(t−t̄)(y_t−ȳ) / Σ(t−t̄)²；  a = ȳ − b·t̄",
 }
 FORMULA_NOTE = {
     "MA": "把最近 k 期的平均值作为预测值",
-    "SES": "S(T−1) 为第 T−1 期的预测值（手动指定或取训练段实际值的平均值）：第 T 期预测值 = α×(第 T−1 期实际值)+(1−α)×S(T−1)，之后逐期递推",
+    "SES": "S0 为初始值（手动指定，或取前若干期实际值的平均值）：从 S0 出发用 Y1, Y2, ... 逐期递推得到 S1, S2, ...；第 t 期的预测值取 S_(t−1)",
     "Naive": "第 t 期的预测值取第 t−1 期的实际值（滚动一步向前）",
     "Linear": "对训练段 n 期做最小二乘拟合得到 a、b，再把期数 t 代入方程外推；"
               "预测标准误按回归预测区间公式计算，随外推步长增大",
@@ -183,7 +184,7 @@ def _highlight_best(ws, first_row, last_row, col):
 def build_workbook(y, results, info, labels, z, wb):
     """把结果写成 Excel 工作簿。
 
-    工作表：输入数据 / 模型公式 / 训练段拟合 / 留出段预测 / 预测区间 / 模型对比 / 走势图
+    工作表：输入数据 / 模型公式 / 训练段拟合 / 留出段预测 / 预测区间 / 模型对比 / SES平滑值 / 走势图
     """
     n, train_n, horizon = info["n"], info["train_n"], info["horizon"]
     t_index = info["t_index"]
@@ -333,7 +334,25 @@ def build_workbook(y, results, info, labels, z, wb):
         c = ws5.cell(row=note_row + i, column=1, value=txt)
         c.font = _BOLD if i == 0 else _NOTE_FONT
 
-    # ===== Sheet 7 : 走势图 =====
+    # ===== Sheet 7 : SES 递推全过程 =====
+    ses_res = [r for r in results if r.id == "SES"]
+    if ses_res:
+        S = ses_res[0].fit_info.get("s_series", [])
+        wss = wb.create_sheet("SES平滑值")
+        _write_title(wss, 1, f"SES 递推全过程：S0 ~ S{len(S) - 1}", 5)
+        _write_note(wss, 2, "S_t = α·Y_t + (1−α)·S_(t−1)；第 t 期的预测值取 S_(t−1)", 5)
+        srows = []
+        for t in range(len(S)):
+            srows.append([f"S{t}",
+                          "初始值" if t == 0 else f"α·Y{t} + (1−α)·S{t - 1}",
+                          "—" if t == 0 else y[t - 1],
+                          S[t],
+                          f"第 {t + 1} 期预测值" if t < n else "—"])
+        _write_table(wss, 4, ["平滑值", "计算依据", "该期实际值", "数值", "用作"],
+                     srows)
+        _set_widths(wss, [12, 26, 14, 14, 16])
+
+    # ===== Sheet 8 : 走势图 =====
     ws6 = wb.create_sheet("走势图")
     _write_title(ws6, 1, "观测值与留出段预测", 2 + len(results))
     tail = min(8, n)
@@ -395,7 +414,8 @@ def main():
 
     results, info = core.run_holdout(
         y, forecast_start, models=MODELS, ma_order=MA_ORDER,
-        ses_level=SES_LEVEL, alpha=SES_ALPHA, confidence=CONFIDENCE)
+        ses_s0=SES_S0, ses_avg_n=SES_AVG_N, alpha=SES_ALPHA,
+        confidence=CONFIDENCE)
     z = core.z_value(CONFIDENCE)
     train_n, horizon = info["train_n"], info["horizon"]
 
@@ -408,8 +428,8 @@ def main():
     for _r in results:
         if _r.id == "SES":
             _fi = _r.fit_info
-            print(f"SES：α = {_fi['alpha']:g}，初始值 S(T−1) = {_fi['level']:.4f}"
-                  f"（{'手动指定' if _fi['given'] else '训练段实际值平均'}）")
+            print(f"SES：α = {_fi['alpha']:g}，初始值 S0 = {_fi['s0']:.4f}"
+                  f"（{'手动指定' if _fi['given'] else '前 ' + str(_fi['avg_n']) + ' 期平均'}）")
     print("=" * 84)
     print(f"{'模型':<22}{'SSE':>12}{'RMSE':>10}{'SE':>10}{'U1':>9}{'U2':>9}")
     print("-" * 84)

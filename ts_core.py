@@ -22,7 +22,7 @@
     z_value(confidence)             正态分布双侧分位数
     fit_naive(train, horizon)       Naive 朴素法
     fit_ma(train, order, horizon)   k 期移动平均
-    fit_ses(train, horizon, alpha, level)  一次指数平滑（给定起始值后逐期递推）
+    fit_ses(train, horizon, alpha, s0, avg_n)  一次指数平滑（给定 S0 后逐期递推）
     fit_linear(train, horizon)      线性趋势模型（最小二乘拟合）
     run_holdout(...)                切分 + 建模 + 留出段评估
     MODELS                          模型标识，按显示顺序：
@@ -38,7 +38,7 @@
     预测期标准误 SE(h)：
         Naive（滚动一步向前）: SE
         MA（水平预测）  : SE
-        SES            : SE（每期都是用上一期实际值做一步预测）
+        SES            : SE（每期预测值 = 上一期平滑值 S_(t−1)）
         Linear（趋势外推）: s·√( 1 + 1/n + (T+h−t̄)²/Σ(t−t̄)² )，
                            s 为训练段回归残差标准误（随外推步长增大）
 
@@ -224,17 +224,18 @@ def fit_linear(train, horizon):
     )
 
 
-def fit_ses(train, horizon, alpha=0.3, level=None):
-    """一次指数平滑（SES）：给定初始值后逐期递推。
+def fit_ses(train, horizon, alpha=0.3, s0=None, avg_n=None):
+    """一次指数平滑（SES）：以初始值 S0 起，用递推式逐期求出 S1, S2, ...
 
-        S_(t+1) = α·Y_t + (1−α)·S_t          （S_t 表示第 t 期的预测值）
+        S_t = α·Y_t + (1−α)·S_(t−1)，        第 t 期的预测值  y_hat_t = S_(t−1)
 
-    起始值 level 即第 T−1 期（训练段最后一期）的预测值 S(T−1)：
-        · 传入了 level（数字或数字字符串）→ 直接采用该数值；
-        · 未传入（None 或空字符串）      → 取训练段 n 期实际值的算术平均。
-    递推在 run_holdout 中完成：第 T 期的预测值 =
-    α·(第 T−1 期实际值) + (1−α)·S(T−1)，之后每期用当期实际值与当期预测值算出下期预测值。
-    待估参数个数 k：起始值由数据估计（取平均）时计 1，手动指定时计 0。
+    初始值 S0（第 1 期之前的水准）的来源：
+        · 传入了 s0（数字或数字字符串）→ 直接采用该数值；
+        · 未传入（None 或空字符串）      → 取前 avg_n 期实际值的算术平均，
+                                           avg_n 省略时取整个训练段的长度。
+    递推在 run_holdout 中完成：从 S0 出发依次用 Y1, Y2, ... 求出 S1, S2, ...，
+    训练段与留出段的期数都算，最终只要留出段那些期的预测值。
+    待估参数个数 k：S0 由数据估计（取平均）时计 1，手动指定时计 0。
     """
     n = len(train)
     if not 0 < alpha < 1:
@@ -242,23 +243,34 @@ def fit_ses(train, horizon, alpha=0.3, level=None):
     if n < 2:
         raise ValueError("一次指数平滑至少需要 2 期训练数据。")
 
-    mean = sum(train) / n
-    given = level is not None and str(level).strip() != ""
+    if avg_n is None:
+        avg_n = n
+    try:
+        avg_n = int(avg_n)
+    except (TypeError, ValueError):
+        raise ValueError("取平均的期数必须是整数。") from None
+    if not 1 <= avg_n <= n:
+        raise ValueError(f"取平均的期数要介于 1 和 {n} 之间（当前训练段共 {n} 期）。")
+
+    mean = sum(train[:avg_n]) / avg_n
+    given = s0 is not None and str(s0).strip() != ""
     if given:
         try:
-            lvl = float(level)
+            lvl = float(s0)
         except (TypeError, ValueError):
-            raise ValueError(f"起始值 S(T−1) 必须是数字，收到：{level!r}") from None
+            raise ValueError(f"初始值 S0 必须是数字，收到：{s0!r}") from None
         src, k = "手动指定", 0
     else:
-        lvl, src, k = mean, "训练段均值", 1
+        lvl, src, k = mean, f"前 {avg_n} 期实际值的平均", 1
     return ModelResult(
         id="SES", key="SES", name="SES 一次指数平滑",
-        params=f"α = {alpha:g}, S(T−1) = {lvl:.4f}（{src}）",
+        params=f"α = {alpha:g}, S0 = {lvl:.4f}（{src}）",
         k=k, se_kind="flat", mode="ses",
         train_n=n, horizon=horizon, point=lvl,
-        fit_info=dict(level=lvl, given=given, mean=mean, n=n, alpha=alpha),
+        fit_info=dict(s0=lvl, given=given, mean=mean, avg_n=avg_n, n=n, alpha=alpha),
     )
+
+
 
 
 
@@ -320,8 +332,8 @@ def _se_pred(r, horizon):
 # 主入口：留出法
 # --------------------------------------------------------------------------
 
-def run_holdout(y, forecast_start, models=MODELS, ma_order=3, ses_level=None,
-                alpha=0.3, confidence=0.95):
+def run_holdout(y, forecast_start, models=MODELS, ma_order=3, ses_s0=None,
+                ses_avg_n=None, alpha=0.3, confidence=0.95):
     """切分序列、在训练段上建模、在留出段上评估。
 
     参数
@@ -331,7 +343,8 @@ def run_holdout(y, forecast_start, models=MODELS, ma_order=3, ses_level=None,
                      预测第 6 期起的全部观测，因此训练段 = y[:5]。
     models         : 启用哪些模型，MODELS 的子集，如 ("MA", "SES")
     ma_order       : 移动平均阶数 k（默认 3，即 3MA）
-    ses_level      : SES 的起始平滑值 S(T−1)；None / 留空表示自动取训练段实际值平均
+    ses_s0         : SES 的初始值 S0（第 1 期之前的水准）；None 表示自动取前若干期平均
+    ses_avg_n      : 自动求 S0 时取前多少期的平均，None 表示取整个训练段
     alpha          : SES 平滑系数，用于逐期递推
     confidence     : 预测区间置信水平（用于校验）
 
@@ -368,7 +381,7 @@ def run_holdout(y, forecast_start, models=MODELS, ma_order=3, ses_level=None,
         if mid == "MA":
             results.append(fit_ma(train, ma_order, horizon))
         elif mid == "SES":
-            results.append(fit_ses(train, horizon, alpha, ses_level))
+            results.append(fit_ses(train, horizon, alpha, ses_s0, ses_avg_n))
         elif mid == "Linear":
             results.append(fit_linear(train, horizon))
         else:
@@ -384,12 +397,19 @@ def run_holdout(y, forecast_start, models=MODELS, ma_order=3, ses_level=None,
         elif r.mode == "trend":            # 沿线性趋势外推（t 为 1 基期数）
             fi = r.fit_info
             r.forecast = [fi["a"] + fi["b"] * (t + 1) for t in t_index]
-        elif r.mode == "ses":              # S_(t+1) = α·Y_t + (1−α)·S_t
-            lvl, fc = r.point, []
-            for t in t_index:
-                lvl = alpha * y[t - 1] + (1 - alpha) * lvl   # 用上一期实际值更新
-                fc.append(lvl)                               # 得到本期的预测值
-            r.forecast = fc
+        elif r.mode == "ses":              # S_t = α·Y_t + (1−α)·S_(t−1)
+            # 从 S0 出发，用全部实际值依次求出 S1, S2, ...（s_series[t] = S_t）
+            lvl, s_series = r.point, [r.point]
+            for t in range(len(y)):
+                lvl = alpha * y[t] + (1 - alpha) * lvl
+                s_series.append(lvl)
+            r.forecast = [s_series[t] for t in t_index]   # 第 t 期预测值 = S_(t−1)
+            r.fit_info["s_series"] = s_series
+            # 训练段的样本内一步预测同样取上一期的平滑值
+            r.train_index = list(range(r.train_n))
+            r.train_actual = [y[t] for t in range(r.train_n)]
+            r.train_fitted = [s_series[t] for t in range(r.train_n)]
+            r.train_errors = [a - f for a, f in zip(r.train_actual, r.train_fitted)]
         else:                              # 一次性外推：各期相同
             r.forecast = [r.point] * horizon
         r.errors = [a - f for a, f in zip(r.actual, r.forecast)]
