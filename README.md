@@ -48,7 +48,11 @@ pip install -r requirements.txt
 jupyter notebook
 ```
 
-打开任意一本即可。换成自己的数据只需要改每个 notebook **第 2 节**里的两个变量：
+打开任意一本即可，然后 **从上到下依次运行**（或者用菜单 `Kernel → Restart & Run All` 一次跑完整个 notebook）。
+
+> notebook 里的变量是跨单元格共享的，**跳着只运行中间某一格会报「变量未定义」**——比如指标汇总那一格用到的是模型计算那一格的结果。
+
+换成自己的数据只需要改每个 notebook **第 2 节**里的两个变量：
 
 - `DATA`：按时间先后排列的观测值列表
 - `FORECAST_START`：从第几期开始预测（1 基）。例如填 20 表示用前 19 期建模、预测第 20 期起
