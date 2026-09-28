@@ -4,6 +4,7 @@ __pycache__/
 
 # 每次运行都会重新生成的输出
 ts_forecast_result.xlsx
+预测结果.xlsx
 
 # PyInstaller 打包产物
 build/
