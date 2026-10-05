@@ -1,0 +1,5 @@
+# 运行 notebooks/ 下的 Jupyter notebook 需要的依赖
+pandas>=1.5
+matplotlib>=3.6
+openpyxl>=3.1
+jupyter>=1.0

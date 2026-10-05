@@ -1,7 +1,5 @@
-# 数据处理与绘图
+# 网页应用（app.py）需要的依赖
+# 部署到 Streamlit Community Cloud 时，平台读的就是这个文件
+streamlit>=1.30
+plotly>=5.0
 pandas>=1.5
-matplotlib>=3.6
-openpyxl>=3.1
-
-# 运行 notebook 需要
-jupyter>=1.0
