@@ -1,5 +1,7 @@
 # 时间序列预测对比工具
 
+**在线试用**：[https://aiexeercise1-xlupd5wxqe8njmaamyhemr.streamlit.app/](https://aiexeercise1-xlupd5wxqe8njmaamyhemr.streamlit.app/)
+
 本 python 程序是一个基于 AI 开发的、方便计算时间序列分析中预测值以及其他数值的工具。
 
 对一组等间隔的时间序列，用四种经典模型分别做预测，并给出统一的评价指标：
@@ -33,9 +35,9 @@ streamlit run app.py
 
 浏览器会自动打开 `http://localhost:8501`。
 
-**在线访问**：部署到 Streamlit Community Cloud 之后，网址形如
-`https://<你的应用子域名>.streamlit.app`，任何拿到链接的人都能直接使用，
-无需安装任何东西。（部署步骤见文末）
+**在线访问**：[https://aiexeercise1-xlupd5wxqe8njmaamyhemr.streamlit.app/](https://aiexeercise1-xlupd5wxqe8njmaamyhemr.streamlit.app/)
+
+打开就能用，把链接发给任何人都行，对方不需要安装任何东西。（部署步骤见文末）
 
 ### 二、Jupyter notebook（适合阅读和分享）
 
