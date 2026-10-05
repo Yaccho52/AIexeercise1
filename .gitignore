@@ -2,5 +2,9 @@
 __pycache__/
 *.pyc
 
+# 虚拟环境
+.venv/
+venv/
+
 # notebook 运行后导出的 Excel（05 会生成）
 预测结果.xlsx
